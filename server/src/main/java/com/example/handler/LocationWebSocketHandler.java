@@ -9,10 +9,13 @@ import java.util.*;
 
 @Component
 public class LocationWebSocketHandler extends TextWebSocketHandler {
+
     private static final Map<String, WebSocketSession> connectedUsers = new ConcurrentHashMap<>();
     private static final Map<String, String> sessionToUser = new ConcurrentHashMap<>();
     private static final Map<String, String> userToSession = new ConcurrentHashMap<>();
     private static final Map<String, String> locationRequests = new ConcurrentHashMap<>();
+    private static final Map<String, String> activeLocationShares = new ConcurrentHashMap<>();
+
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Override
@@ -76,44 +79,56 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
     private void requestLocation(String sender, String receiver) throws Exception {
         WebSocketSession receiverSession = connectedUsers.get(receiver);
         if (receiverSession != null) {
-            receiverSession.sendMessage(new TextMessage(objectMapper.writeValueAsString(Map.of("command", "LOCATION_REQUEST", "from", sender))));
+            receiverSession.sendMessage(new TextMessage(
+                    objectMapper.writeValueAsString(Map.of("command", "LOCATION_REQUEST", "from", sender))));
             locationRequests.put(receiver, sender);
         }
     }
 
     private void acceptLocation(String sender, String receiver) throws Exception {
-        if (locationRequests.get(sender) == null || !locationRequests.get(sender).equals(receiver)) return;
+        if (locationRequests.get(sender) == null || !locationRequests.get(sender).equals(receiver))
+            return;
         locationRequests.remove(sender);
+
+        activeLocationShares.put(sender, receiver);
+        activeLocationShares.put(receiver, sender);
 
         WebSocketSession receiverSession = connectedUsers.get(receiver);
         WebSocketSession senderSession = connectedUsers.get(sender);
 
         if (receiverSession != null && senderSession != null) {
-            receiverSession.sendMessage(new TextMessage(objectMapper.writeValueAsString(Map.of("command", "LOCATION_ACCEPTED", "from", sender))));
-            senderSession.sendMessage(new TextMessage(objectMapper.writeValueAsString(Map.of("command", "LOCATION_ACCEPTED", "from", receiver))));
+            receiverSession.sendMessage(new TextMessage(
+                    objectMapper.writeValueAsString(Map.of("command", "LOCATION_ACCEPTED", "from", sender))));
+            senderSession.sendMessage(new TextMessage(
+                    objectMapper.writeValueAsString(Map.of("command", "LOCATION_ACCEPTED", "from", receiver))));
         }
     }
 
     private void updateLocation(String sender, String latitude, String longitude) throws Exception {
-        for (Map.Entry<String, String> entry : locationRequests.entrySet()) {
-            if (entry.getValue().equals(sender) || entry.getKey().equals(sender)) {
-                String receiver = entry.getKey().equals(sender) ? entry.getValue() : entry.getKey();
-                WebSocketSession receiverSession = connectedUsers.get(receiver);
-                if (receiverSession != null) {
-                    receiverSession.sendMessage(new TextMessage(objectMapper.writeValueAsString(
-                        Map.of("command", "LOCATION_UPDATE", "from", sender, "latitude", latitude, "longitude", longitude))));
-                }
+        String receiver = activeLocationShares.get(sender);
+        if (receiver != null) {
+            WebSocketSession receiverSession = connectedUsers.get(receiver);
+            if (receiverSession != null && receiverSession.isOpen()) {
+                Map<String, String> locationUpdate = new HashMap<>();
+                locationUpdate.put("command", "LOCATION_UPDATE");
+                locationUpdate.put("from", sender);
+                locationUpdate.put("latitude", latitude);
+                locationUpdate.put("longitude", longitude);
+
+                receiverSession.sendMessage(new TextMessage(objectMapper.writeValueAsString(locationUpdate)));
             }
         }
     }
 
     private void notifyRejection(String receiver) throws Exception {
         String sender = locationRequests.remove(receiver);
-        if (sender == null) return;
+        if (sender == null)
+            return;
 
         WebSocketSession senderSession = connectedUsers.get(sender);
         if (senderSession != null) {
-            senderSession.sendMessage(new TextMessage(objectMapper.writeValueAsString(Map.of("command", "LOCATION_REJECTED", "from", receiver))));
+            senderSession.sendMessage(new TextMessage(
+                    objectMapper.writeValueAsString(Map.of("command", "LOCATION_REJECTED", "from", receiver))));
         }
     }
 
